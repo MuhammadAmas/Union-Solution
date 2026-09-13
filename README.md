@@ -1,4 +1,4 @@
-# CrewLink — Member Callout (exercise submission)
+# CrewLink — Member Callout
 
 Design and rationale: [DESIGN.md](DESIGN.md). Diagram: [Diagram.md](Diagram.md). AI chat log: [AI-CONVERSATIONS.md](AI-CONVERSATIONS.md).
 

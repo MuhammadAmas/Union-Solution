@@ -1,3 +1,4 @@
+import Head from "next/head";
 import { useEffect, useRef, useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
@@ -7,11 +8,62 @@ function newIdempotencyKey() {
   return `key-${Date.now()}-${Math.random()}`;
 }
 
+function StatBar({ label, value, total, color }) {
+  const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+  return (
+    <div className="stat">
+      <div className="stat-row">
+        <span className="stat-label">{label}</span>
+        <span className="stat-value">
+          {value} <span className="stat-of">/ {total}</span>
+        </span>
+      </div>
+      <div className="bar">
+        <div className="bar-fill" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <style jsx>{`
+        .stat {
+          margin-bottom: 14px;
+        }
+        .stat-row {
+          display: flex;
+          justify-content: space-between;
+          margin-bottom: 6px;
+          font-size: 13px;
+        }
+        .stat-label {
+          color: var(--text-muted);
+          font-weight: 500;
+        }
+        .stat-value {
+          font-weight: 600;
+        }
+        .stat-of {
+          color: var(--text-muted);
+          font-weight: 400;
+        }
+        .bar {
+          height: 8px;
+          border-radius: 999px;
+          background: var(--border);
+          overflow: hidden;
+        }
+        .bar-fill {
+          height: 100%;
+          border-radius: 999px;
+          transition: width 0.4s ease;
+        }
+      `}</style>
+    </div>
+  );
+}
+
 export default function LeadershipScreen() {
   const [email, setEmail] = useState("denise@local27.example.org");
   const [password, setPassword] = useState("password123");
   const [session, setSession] = useState(null); // { token, role, local_id }
   const [loginError, setLoginError] = useState("");
+  const [loggingIn, setLoggingIn] = useState(false);
 
   const [rawText, setRawText] = useState("");
   const [title, setTitle] = useState("");
@@ -47,6 +99,7 @@ export default function LeadershipScreen() {
   async function handleLogin(e) {
     e.preventDefault();
     setLoginError("");
+    setLoggingIn(true);
     try {
       const data = await api("/auth/login", {
         method: "POST",
@@ -59,7 +112,14 @@ export default function LeadershipScreen() {
       setSession(data);
     } catch (err) {
       setLoginError(err.message);
+    } finally {
+      setLoggingIn(false);
     }
+  }
+
+  function handleLogout() {
+    setSession(null);
+    setAnnouncement(null);
   }
 
   async function handleGenerateDraft() {
@@ -133,128 +193,186 @@ export default function LeadershipScreen() {
 
   if (!session) {
     return (
-      <main style={{ fontFamily: "sans-serif", maxWidth: 420, margin: "60px auto" }}>
-        <h1>CrewLink — Leadership Login</h1>
-        <form onSubmit={handleLogin}>
-          <div>
-            <label>Email</label>
-            <br />
-            <input value={email} onChange={(e) => setEmail(e.target.value)} style={{ width: "100%" }} />
+      <>
+        <Head>
+          <title>CrewLink — Leadership Login</title>
+        </Head>
+        <div className="auth-page">
+          <div className="auth-card">
+            <div className="brand">
+              <span className="brand-mark">C</span>
+              <span className="brand-name">CrewLink</span>
+            </div>
+            <h1>Leadership sign-in</h1>
+            <p className="subtitle">Send callouts and track delivery for your local.</p>
+
+            <form onSubmit={handleLogin}>
+              <div className="field">
+                <label htmlFor="email">Email</label>
+                <input
+                  id="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="username"
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="password">Password</label>
+                <input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </div>
+              {loginError && <p className="error-text">{loginError}</p>}
+              <button className="btn btn-primary btn-block" type="submit" disabled={loggingIn}>
+                {loggingIn ? "Signing in…" : "Sign in"}
+              </button>
+            </form>
+
+            <div className="seed-hint">
+              Seeded login: <code>denise@local27.example.org</code> / <code>password123</code>
+            </div>
           </div>
-          <div style={{ marginTop: 8 }}>
-            <label>Password</label>
-            <br />
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={{ width: "100%" }}
-            />
-          </div>
-          {loginError && <p style={{ color: "crimson" }}>{loginError}</p>}
-          <button type="submit" style={{ marginTop: 12 }}>
-            Log in
-          </button>
-        </form>
-        <p style={{ color: "#666", fontSize: 13 }}>
-          Seeded leadership login: denise@local27.example.org / password123
-        </p>
-      </main>
+        </div>
+      </>
     );
   }
 
   return (
-    <main style={{ fontFamily: "sans-serif", maxWidth: 640, margin: "40px auto" }}>
-      <h1>CrewLink — Send a Callout</h1>
-      <p style={{ color: "#666" }}>
-        Local: <code>{session.local_id}</code>
-      </p>
+    <>
+      <Head>
+        <title>CrewLink — Send a Callout</title>
+      </Head>
+      <div className="page">
+        <header className="topbar">
+          <div className="brand">
+            <span className="brand-mark">C</span>
+            <span className="brand-name">CrewLink</span>
+          </div>
+          <div className="topbar-right">
+            <span className="badge" title={session.local_id}>
+              Local {session.local_id.slice(-4)}
+            </span>
+            <button className="btn btn-ghost" onClick={handleLogout}>
+              Log out
+            </button>
+          </div>
+        </header>
 
-      <section style={{ border: "1px solid #ccc", padding: 16, marginBottom: 16 }}>
-        <h3>1. Paste the messy note (optional)</h3>
-        <textarea
-          rows={3}
-          style={{ width: "100%" }}
-          placeholder="emergency mtg thurs 6pm hall re: contractor pulling crews off the westside job..."
-          value={rawText}
-          onChange={(e) => setRawText(e.target.value)}
-        />
-        <button type="button" onClick={handleGenerateDraft} disabled={aiLoading || !rawText.trim()}>
-          {aiLoading ? "Generating..." : "Generate draft with AI"}
-        </button>
-        {aiNote && <p style={{ color: "#a15c00" }}>{aiNote}</p>}
-      </section>
+        <main className="content">
+          <section className="card">
+            <div className="card-header">
+              <span className="step-number">1</span>
+              <h2>Paste the messy note</h2>
+              <span className="optional-tag">optional</span>
+            </div>
+            <textarea
+              className="textarea"
+              rows={3}
+              placeholder="emergency mtg thurs 6pm hall re: contractor pulling crews off the westside job..."
+              value={rawText}
+              onChange={(e) => setRawText(e.target.value)}
+            />
+            <div className="card-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleGenerateDraft}
+                disabled={aiLoading || !rawText.trim()}
+              >
+                {aiLoading ? "Generating…" : "✦ Generate draft with AI"}
+              </button>
+            </div>
+            {aiNote && <div className="banner banner-warning">{aiNote}</div>}
+          </section>
 
-      <form onSubmit={handleSend} style={{ border: "1px solid #ccc", padding: 16 }}>
-        <h3>2. Review and send</h3>
-        <div>
-          <label>Title</label>
-          <br />
-          <input value={title} onChange={(e) => setTitle(e.target.value)} required style={{ width: "100%" }} />
-        </div>
-        <div style={{ marginTop: 8 }}>
-          <label>Body</label>
-          <br />
-          <textarea
-            rows={4}
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            required
-            style={{ width: "100%" }}
-          />
-        </div>
-        <div style={{ marginTop: 8 }}>
-          <label>Classification filter (optional)</label>
-          <br />
-          <input
-            value={classificationFilter}
-            onChange={(e) => setClassificationFilter(e.target.value)}
-            placeholder="e.g. Apprentice 3rd Year"
-            style={{ width: "100%" }}
-          />
-        </div>
-        <div style={{ marginTop: 8 }}>
-          <label>
-            <input type="checkbox" checked={needsAck} onChange={(e) => setNeedsAck(e.target.checked)} />
-            Requires acknowledgement
-          </label>
-        </div>
-        {sendError && <p style={{ color: "crimson" }}>{sendError}</p>}
-        <button type="submit" disabled={sending} style={{ marginTop: 12 }}>
-          {sending ? "Sending..." : "Send"}
-        </button>
-        <button type="button" onClick={startNewCompose} style={{ marginTop: 12, marginLeft: 8 }}>
-          New announcement
-        </button>
-      </form>
+          <section className="card">
+            <div className="card-header">
+              <span className="step-number">2</span>
+              <h2>Review and send</h2>
+            </div>
+            <form onSubmit={handleSend}>
+              <div className="field">
+                <label>Title</label>
+                <input value={title} onChange={(e) => setTitle(e.target.value)} required />
+              </div>
+              <div className="field">
+                <label>Body</label>
+                <textarea
+                  className="textarea"
+                  rows={4}
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="field-row">
+                <div className="field">
+                  <label>Classification filter</label>
+                  <input
+                    value={classificationFilter}
+                    onChange={(e) => setClassificationFilter(e.target.value)}
+                    placeholder="All classifications"
+                  />
+                </div>
+                <label className="checkbox-field">
+                  <input
+                    type="checkbox"
+                    checked={needsAck}
+                    onChange={(e) => setNeedsAck(e.target.checked)}
+                  />
+                  Requires acknowledgement
+                </label>
+              </div>
+              {sendError && <div className="banner banner-error">{sendError}</div>}
+              <div className="card-actions">
+                <button className="btn btn-primary" type="submit" disabled={sending}>
+                  {sending ? "Sending…" : "Send callout"}
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={startNewCompose}>
+                  New announcement
+                </button>
+              </div>
+            </form>
+          </section>
 
-      {announcement && (
-        <section style={{ marginTop: 16, border: "1px solid #ccc", padding: 16 }}>
-          <h3>{announcement.title}</h3>
-          <p>{announcement.body}</p>
-          <table>
-            <tbody>
-              <tr>
-                <td>Total recipients</td>
-                <td>{announcement.total_recipients}</td>
-              </tr>
-              <tr>
-                <td>Sent</td>
-                <td>{announcement.sent_count}</td>
-              </tr>
-              <tr>
-                <td>Read</td>
-                <td>{announcement.read_count}</td>
-              </tr>
-              <tr>
-                <td>Acknowledged</td>
-                <td>{announcement.acknowledged_count}</td>
-              </tr>
-            </tbody>
-          </table>
-          <p style={{ color: "#666", fontSize: 13 }}>Updating every 3s...</p>
-        </section>
-      )}
-    </main>
+          {announcement && (
+            <section className="card results-card">
+              <div className="results-header">
+                <div>
+                  <h2 className="results-title">{announcement.title}</h2>
+                  <p className="results-body">{announcement.body}</p>
+                </div>
+                <span className="live-dot" title="Refreshing every 3s" />
+              </div>
+
+              <StatBar
+                label="Sent"
+                value={announcement.sent_count}
+                total={announcement.total_recipients}
+                color="var(--primary)"
+              />
+              <StatBar
+                label="Read"
+                value={announcement.read_count}
+                total={announcement.total_recipients}
+                color="#0ea5e9"
+              />
+              <StatBar
+                label="Acknowledged"
+                value={announcement.acknowledged_count}
+                total={announcement.total_recipients}
+                color="var(--success)"
+              />
+
+              <p className="live-text">Live · updating every 3 seconds</p>
+            </section>
+          )}
+        </main>
+      </div>
+    </>
   );
 }
