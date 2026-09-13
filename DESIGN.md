@@ -1,5 +1,13 @@
 # DESIGN.md
 
+**Stack note:** built in FastAPI + SQLAlchemy + Postgres rather than the
+brief's preferred Django+DRF ("solid work in another stack still counts").
+The Part A answers below describe the design in framework-neutral terms; where
+the mechanism maps onto a specific FastAPI construct (dependencies, a shared
+`repo.py` query layer) rather than the DRF ViewSet/permission-class language
+you'd expect from the preferred stack, I've named the FastAPI equivalent
+directly, since that's what Part B actually runs.
+
 ## Part 0 — Requirements
 
 **What I'm building, in plain terms**
@@ -46,7 +54,8 @@ accounts(id, local_id -> locals, member_id -> members NULL, role, email, passwor
 
 announcements(id, local_id -> locals, created_by -> accounts, title, body,
               classification_filter text NULL, needs_ack boolean,
-              sent_at timestamptz NULL, created_at timestamptz)
+              idempotency_key text, sent_at timestamptz NULL, created_at timestamptz)
+  -- UNIQUE (created_by, idempotency_key) -- see Rule 2
 
 recipients(id, announcement_id -> announcements, member_id -> members,
            status, sent_at, read_at, acknowledged_at, rsvp text NULL)
@@ -77,12 +86,26 @@ Live counts, watched by four people in the office: they don't poll Postgres dire
 
 ### 3. The two rules, by design
 
-**Rule 1 — isolation.** Enforced at the query layer, not per-endpoint. Every query touching `members`, `announcements`, or `recipients` goes through a manager method that takes the requesting account and mandatorily injects `local_id = account.local_id` — there's no code path that queries these tables without it, because the base ViewSet applies it automatically rather than leaving it to each new view to remember. That's the answer to "what happens when someone adds an endpoint next year and forgets": they inherit the scoping by extending the base class; bypassing it means visibly not using the shared query path, which stands out in review. Postgres row-level security is the backstop under that, in case a raw query ever slips through. The member/leadership boundary is a second, independent check — a permission class on the viewset (e.g. `IsLeadershipOfLocal`) gating create/send actions — so local-scoping and role-checking can't be bypassed by only remembering one of the two.
-Detection in production: a scheduled synthetic check logs in as a leadership account for Local A and attempts to read Local B's members/announcements, alerting if it doesn't get zero rows / 403. Access logs are tagged with `(account.local_id, resource.local_id)`; any line where they differ is an active alert, not just something to notice in a report later.
+**Rule 1 — isolation.** Enforced at the query layer, not per-endpoint. Every query touching `members`, `announcements`, or `recipients` goes through a small set of functions (`repo.py`) that take the requesting account and mandatorily filter by `local_id = account.local_id` (or, for a member acting on their own recipient row, `member_id = account.member_id`) — there's no code path that queries these tables without it, because those are the only functions that know how to reach them; nothing calls the ORM directly. That's the answer to "what happens when someone adds an endpoint next year and forgets": using `repo.get_announcement_for_account(...)` is also the path of least resistance, so a new endpoint reaches for it the same way it reaches for the DB session — writing a raw, unscoped query instead means visibly not using the shared helper, which is what a reviewer would flag. The member/leadership boundary is a second, independent check — a `require_leadership` / `require_member` dependency gating each router — so local-scoping and role-checking can't be bypassed by only remembering one of the two. (In the Django+DRF shape this brief prefers, the same two ideas would be a base ViewSet queryset mixin plus a permission class; a Postgres row-level-security policy would be the natural backstop under either, in case a raw query ever slipped through — not implemented here, see "what I cut" below.)
+Detection in production: a scheduled synthetic check logs in as a leadership account for Local A and attempts to read Local B's members/announcements, alerting if it doesn't get zero rows / 403/404. Access logs are tagged with `(account.local_id, resource.local_id)`; any line where they differ is an active alert, not just something to notice in a report later.
 
-**Rule 2 — exactly-once.** The mechanism is the `UNIQUE (announcement_id, member_id)` constraint on `recipients`, combined with `ON CONFLICT DO NOTHING` inserts — not an in-memory "have we sent this" flag, which is exactly what breaks the moment there's a second process (the trap called out in the bonus section). A retried "Send" click hits the same `send_jobs` row (unique on `announcement_id`), so it's a no-op at the job level too, before fan-out is even considered. A worker that crashes mid-batch and restarts just re-runs the same insert, which the unique constraint reduces to updating nothing for rows that already exist. Push dispatch is idempotent per recipient the same way: each task checks `recipient.status` before sending; already-`sent` is a no-op, so a restarted worker re-walking a job doesn't re-push.
+**Rule 2 — exactly-once.** Two layers, because a retry can happen at two different points. First, at the create+send boundary: the client generates an `idempotency_key` once per compose action and resends the same key on retry (double-click, network timeout-and-retry); `UNIQUE (created_by, idempotency_key)` on `announcements` means a retried request finds the row that already exists (insert raises, caught, re-fetched) instead of creating a second announcement with its own audience and its own send. Second, at fan-out: the mechanism is the `UNIQUE (announcement_id, member_id)` constraint on `recipients`, combined with `ON CONFLICT DO NOTHING` inserts — not an in-memory "have we sent this" flag, which is exactly what breaks the moment there's a second process (the trap called out in the bonus section). A `send_jobs` row (unique on `announcement_id`) tracks whether fan-out for that one announcement has completed; a worker that crashes mid-batch and restarts, or a request that resumes an announcement whose job never finished, just re-runs the same insert, which the unique constraint reduces to updating nothing for rows that already exist. Push dispatch is idempotent per recipient the same way: only `pending` rows are moved to `sent`; already-`sent` rows are left alone, so re-walking a job doesn't re-push.
 Detection: a scheduled check comparing `count(distinct member_id)` to `count(*)` in `recipients` per announcement (must be equal — any excess means duplicate rows slipped past the constraint somehow), plus alerting on any push-provider log showing two message IDs for the same (member, announcement) pair.
 
 ### 4. Diagram
 
-See `diagram.md` (Mermaid) in the repo root.
+See [`Diagram.md`](Diagram.md) (Mermaid) in the repo root.
+
+---
+
+## What I cut
+
+- **Async fan-out.** Part A describes a background worker for the 22,400-member case; Part B fans out synchronously inside the request, since the seed data (2,000/200 members) makes that fast enough to demo and it keeps the slice small. The idempotency mechanism (unique constraints + `ON CONFLICT DO NOTHING`) is the same either way — swapping in a queue later doesn't change how Rule 2 is enforced, only who calls `repo.fan_out_recipients`.
+- **Real push delivery.** Sends are logged (`print` in `_run_send`), not delivered via FCM/APNs, per the brief's scope relief.
+- **Postgres row-level security.** Named in Part A as a backstop under the application-layer scoping; not implemented — the app-layer checks in `repo.py` are what's actually enforced and tested here.
+- **Migrations.** Tables are created via `Base.metadata.create_all()` on startup instead of Alembic migrations, given the exercise's scope and lifetime.
+- **RSVP.** Left as a Part A design note only, as the brief allows; no `rsvp` column or endpoint in the build.
+- **Member-facing UI.** Only the leadership screen is built; member read/ack is exercised via curl (see README), also per scope relief.
+- **DevOps bonus (2 instances behind a load balancer).** Skipped to keep focus on the required slice. The design already relies on no in-memory state for either rule (all idempotency lives in Postgres unique constraints), so it should hold across instances unchanged — that claim is untested, though.
+
+**Next, if I kept going:** the async worker + queue, real Postgres RLS as the defense-in-depth layer, an Alembic migration history, and the load-balancer bonus to actually prove the "no in-memory state" claim above rather than just asserting it.
